@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-"""
-DAS spatiotemporal line detection (Section 3)
-- Loads CSV where rows=depth (1 m), cols=time (1 min)
-- EDA + visualizations
-- Line detection:
-    (1) Canny -> Probabilistic Hough (segments)
-    (2) Radon transform (dominant angle)
-- Extracts line properties (slope, velocity, spans)
-"""
 
 from __future__ import annotations
 
@@ -21,12 +11,10 @@ import pandas as pd
 
 import matplotlib.pyplot as plt
 
-from skimage import exposure
 from skimage.feature import canny
 from skimage.transform import probabilistic_hough_line, radon
 from skimage.filters import sobel
 from scipy.ndimage import gaussian_filter
-
 
 
 DEFAULT_CSV_PATH = "./Section 3 data.csv"
@@ -36,15 +24,11 @@ DEPTH_RES_M = 1.0
 TIME_RES_MIN = 1.0
 
 
-# ---------------------------
-# Helpers
-# ---------------------------
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
 def robust_normalize(X: np.ndarray, clip_p: Tuple[float, float] = (1.0, 99.0)) -> np.ndarray:
-    """Robustly normalize to [0,1] using percentiles to reduce outlier dominance."""
     lo, hi = np.percentile(X, clip_p)
     if hi <= lo:
         return np.zeros_like(X, dtype=np.float32)
@@ -53,7 +37,6 @@ def robust_normalize(X: np.ndarray, clip_p: Tuple[float, float] = (1.0, 99.0)) -
 
 
 def zscore_along_axis(X: np.ndarray, axis: int) -> np.ndarray:
-    """Z-score along an axis (e.g., per-depth or per-time)."""
     mu = X.mean(axis=axis, keepdims=True)
     sd = X.std(axis=axis, keepdims=True) + 1e-9
     return (X - mu) / sd
@@ -67,7 +50,6 @@ def save_fig(path: str) -> None:
 
 @dataclass
 class LineSegment:
-    # endpoints in image coords: (x=time index, y=depth index)
     x1: int
     y1: int
     x2: int
@@ -86,18 +68,12 @@ class LineSegment:
         return float(math.hypot(self.dx, self.dy))
 
     def slope_depth_per_time(self) -> Optional[float]:
-        """dy/dx in depth-index per time-index; None if vertical (dx=0)."""
         if abs(self.dx) < 1e-9:
             return None
         return self.dy / self.dx
 
 
 def segment_velocity_m_per_min(seg: LineSegment) -> Optional[float]:
-    """
-    Convert slope to velocity:
-      slope = dy/dx (depth_idx / time_idx)
-      depth_idx * DEPTH_RES_M per time_idx * TIME_RES_MIN  -> m/min
-    """
     s = seg.slope_depth_per_time()
     if s is None:
         return None
@@ -105,28 +81,20 @@ def segment_velocity_m_per_min(seg: LineSegment) -> Optional[float]:
 
 
 def segment_spans(seg: LineSegment) -> Tuple[float, float]:
-    """Return (depth_span_m, duration_min)."""
     depth_span_m = abs(seg.dy) * DEPTH_RES_M
     duration_min = abs(seg.dx) * TIME_RES_MIN
     return depth_span_m, duration_min
 
 
-# ---------------------------
-# Load
-# ---------------------------
 def load_das_csv(path: str) -> np.ndarray:
     df = pd.read_csv(path, header=None)
     X = df.values.astype(np.float32)
     return X
 
 
-# ---------------------------
-# EDA / Visualization
-# ---------------------------
 def eda_plots(X: np.ndarray, out_dir: str) -> None:
     ensure_dir(out_dir)
 
-    # Summary stats
     flat = X.ravel()
     stats = {
         "shape": X.shape,
@@ -205,9 +173,6 @@ def eda_plots(X: np.ndarray, out_dir: str) -> None:
     save_fig(os.path.join(out_dir, "std_over_depth.png"))
 
 
-# ---------------------------
-# Line detection (Hough)
-# ---------------------------
 def detect_lines_hough(
     X: np.ndarray,
     out_dir: str,
@@ -218,17 +183,8 @@ def detect_lines_hough(
     line_length: int = 40,
     line_gap: int = 5,
 ) -> List[LineSegment]:
-    """
-    Detect line segments in the spatiotemporal matrix.
-    Pipeline:
-      - robust normalize
-      - optional smoothing
-      - edge detection (Canny)
-      - Probabilistic Hough transform -> segments
-    """
     ensure_dir(out_dir)
 
-    # Normalize + smooth to suppress noise
     Xn = robust_normalize(X, (1, 99))
     Xs = gaussian_filter(Xn, sigma=sigma_smooth) if sigma_smooth > 0 else Xn
 
@@ -245,7 +201,6 @@ def detect_lines_hough(
     for (x1, y1), (x2, y2) in lines:
         segs.append(LineSegment(int(x1), int(y1), int(x2), int(y2)))
 
-    # Save edge map
     plt.figure(figsize=(11, 6))
     plt.imshow(edges, aspect="auto", origin="upper")
     plt.title("Canny edge map (for Hough)")
@@ -253,7 +208,6 @@ def detect_lines_hough(
     plt.ylabel("Depth index (meter)")
     save_fig(os.path.join(out_dir, "edges_canny.png"))
 
-    # Overlay segments on normalized map
     plt.figure(figsize=(11, 6))
     plt.imshow(Xn, aspect="auto", origin="upper")
     for s in segs:
@@ -266,23 +220,14 @@ def detect_lines_hough(
     return segs
 
 
-# ---------------------------
-# Line orientation (Radon)
-# ---------------------------
 def dominant_angle_radon(
     X: np.ndarray,
     out_dir: str,
     theta: Optional[np.ndarray] = None,
 ) -> Tuple[float, np.ndarray, np.ndarray]:
-    """
-    Radon transform to find dominant line orientation.
-    Returns:
-      (best_theta_degrees, theta_grid, radon_energy_over_theta)
-    """
     ensure_dir(out_dir)
 
     Xn = robust_normalize(X, (1, 99))
-    # emphasize edges/structures a bit
     Xg = sobel(Xn)
 
     if theta is None:
@@ -290,12 +235,10 @@ def dominant_angle_radon(
 
     R = radon(Xg, theta=theta, circle=False)
 
-    # energy per angle (sum of squares)
     energy = (R ** 2).sum(axis=0)
     best_idx = int(np.argmax(energy))
     best_theta = float(theta[best_idx])
 
-    # plot energy curve
     plt.figure(figsize=(9, 4))
     plt.plot(theta, energy)
     plt.title("Radon energy vs angle (dominant line orientation)")
@@ -306,9 +249,6 @@ def dominant_angle_radon(
     return best_theta, theta, energy
 
 
-# ---------------------------
-# Properties report
-# ---------------------------
 def summarize_segments(segs: List[LineSegment], top_k: int = 15) -> pd.DataFrame:
     rows = []
     for s in segs:
@@ -333,14 +273,10 @@ def summarize_segments(segs: List[LineSegment], top_k: int = 15) -> pd.DataFrame
     if df.empty:
         return df
 
-    # Keep “most meaningful” segments first (longer segments)
     df = df.sort_values("length_px", ascending=False).head(top_k).reset_index(drop=True)
     return df
 
 
-# ---------------------------
-# Main
-# ---------------------------
 def main(csv_path: str = DEFAULT_CSV_PATH, out_dir: str = OUT_DIR) -> None:
     ensure_dir(out_dir)
 
@@ -348,16 +284,11 @@ def main(csv_path: str = DEFAULT_CSV_PATH, out_dir: str = OUT_DIR) -> None:
     print(f"Loaded: {csv_path}")
     print(f"Matrix shape: {X.shape[0]} depths x {X.shape[1]} times")
 
-    # EDA
     eda_plots(X, out_dir)
 
-    # Radon (dominant angle)
     best_theta, theta_grid, energy = dominant_angle_radon(X, out_dir)
     print(f"\nDominant Radon angle (degrees): {best_theta:.1f}")
-    # Note: converting radon theta to “slope” depends on conventions; we use it mainly as
-    # a sanity-check / orientation hint for Hough parameter tuning.
 
-    # Hough line detection
     segs = detect_lines_hough(
         X,
         out_dir,
@@ -370,17 +301,14 @@ def main(csv_path: str = DEFAULT_CSV_PATH, out_dir: str = OUT_DIR) -> None:
     )
     print(f"\nDetected {len(segs)} line segments via Hough.")
 
-    # Summarize properties
     df = summarize_segments(segs, top_k=20)
     if df.empty:
-        print("No segments found. Try lowering line_length / canny thresholds.")
+        print("No segments found.")
     else:
         print("\n=== TOP LINE SEGMENTS (by pixel length) ===")
-        # nicer printing
         with pd.option_context("display.max_columns", 20, "display.width", 160):
             print(df)
 
-        # Save to CSV
         out_csv = os.path.join(out_dir, "line_segments_top.csv")
         df.to_csv(out_csv, index=False)
         print(f"\nSaved segment summary to: {out_csv}")
