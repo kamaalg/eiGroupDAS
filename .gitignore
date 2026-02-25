@@ -1,0 +1,11 @@
+*.csv
+*.parquet
+*.h5
+*.npy
+*.log
+__pycache__/
+.venv/
+.env
+.DS_Store
+*.xml
+.idea
